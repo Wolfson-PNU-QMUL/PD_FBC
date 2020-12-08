@@ -1,11 +1,11 @@
 # Relationship between blood markers of inflammation and PD: an observational and MR study
 Mel Jensen, Ben Jacobs, Ruth Dobson, Sara Bandres-Ciga, Cornelis Blauwendraat, Anette Schrag, The International Parkinsons Disease Genomics Consortium, Alastair J Noyce
-You can read the preprint [here] (https://www.medrxiv.org/content/10.1101/2020.09.13.20189530v3)
+You can read the preprint [here](https://www.medrxiv.org/content/10.1101/2020.09.13.20189530v3)
 
 ## Overview
 - Convert and extract UKB phenotype data
 - Observational study in UKB
-- MR
+- Mendelian randomisation
 
 ## Convert and extract UKB phenotype data
 
@@ -20,7 +20,6 @@ head -n1 ukb_pheno.tsv > colnames
 module load R
 R
 ````
-
 Then we rename the columns to make life easier
 ````R
 library(readr)
@@ -45,7 +44,7 @@ for(i in 1:length(colnames)){
   colnames_fields <<- c(colnames_fields,name)
 }
 
-#make a new df with those cleaned column names
+# make a new df with those cleaned column names
 df = data.frame(colnames_fields)
 colnames(df) = 'FieldID'
 
@@ -94,7 +93,6 @@ rm colnames
 rm x0*
 rm colnames.tsv
 ````
-
 Now we extract ICD codes to exclude individuals with various autoimmune and inflammatory conditions which could introduce confounding
 ````unix
 qsub /data/Wolfson-UKBB-Dobson/MEL_PD/ukb_convert_pheno.sh
@@ -351,7 +349,7 @@ write_csv(coef_df,"fbc_model_coefficients.csv")
 # plot
 
 p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per unit increase in trait",y="Trait")
-png("model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
+png("model_coefficients_raw_fbc.png",width=3,height=8,res=300,units="in")
 p1
 dev.off()
 
@@ -406,7 +404,7 @@ write_csv(coef_df,"normlised_fbc_model_coefficients.csv")
 # plot
 
 p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per 1-SD increase in trait",y="Trait")
-png("normalised_model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
+png("normalised_model_coefficients_raw_fbc.png",width=6,height=8,res=300,units="in")
 p1
 dev.off()
 
@@ -660,10 +658,34 @@ png("extra_covariates_model_coefficients_raw_fbc.png",width=8,height=8,res=300,u
 p1
 dev.off()
 
+# 2. Exclude extreme counts
 
-# 2. Exclude people close to diagnosis
+extreme_counts = df %>% filter(!is.na(`Lymphocyte count.0.0`)) %>%
+mutate(lymph_z = (`Lymphocyte count.0.0`-mean(`Lymphocyte count.0.0`))/sd(`Lymphocyte count.0.0`)) %>% filter(abs(lymph_z)<3)
+hist(extreme_count$lymph_z)
 
-df = df %>% filter(!(PD_Dx_after_rec==1 & time_to_dx <= 5))
+model = glm(data=extreme_counts,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ `Lymphocyte count.0.0`,family=binomial(link="logit"))
+summary(model)
+
+# 3. Exclude people close to diagnosis
+
+# repeat lympho models, excluding people within x years of diagnosis (up to 8)
+
+coef_df = data.frame()
+make_model = function(x){
+  print(paste0("making models excluding people ",x," years from dx"))
+  test_df = df %>% filter(!(PD_Dx_after_rec==1 & time_to_dx <= x))
+  model = glm(data=test_df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ `Lymphocyte count.0.0`,family=binomial(link="logit"))
+  coef_tbl = summary(model)$coefficients
+  aov = anova(model,test="Chisq")
+  coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6], table(test_df$PD_status)[1],table(test_df$PD_status)[2]))
+}
+sapply(c(1:8),make_model)
+
+coef_df = cbind(c(1:8),coef_df)
+colnames(coef_df) = c("Years before diagnosis filter","beta","se","z","p","lr_p","n_control","n_case")
+coef_df = coef_df %>% select(1,2,3,6,7,8) %>% mutate(OR = exp(beta)) %>% mutate(Lower_CI = exp(beta-1.96*se)) %>% mutate(Upper_CI = exp(beta+1.96*se)) %>% select(1,OR,Lower_CI,Upper_CI,n_case,n_control,lr_p)
+write_csv(coef_df,"years_before_dx_filter.csv")
 
 
 coef_df = data.frame()
@@ -704,32 +726,65 @@ p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_poi
 png("time_to_dx_filter_model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
 p1
 dev.off()
+````
 
+## Mendelian randomisation
+
+Download sum stats for WBC traits and cut a few columns to make them easier to work with
+Filter for P<5e-8 and INFO > 0.3
+
+````unix
+cd /data/Wolfson-UKBB-Dobson/MEL_PD
+wget ftp://ftp.sanger.ac.uk/pub/project/humgen/summary_statistics/UKBB_blood_cell_traits/lymph.assoc
+awk '{FS=",";$1=$1}1' OFS="\t" lymph.assoc | awk '{if($10<5e-8 && $18>0.3) print $0}' OFS="\t" > lymph_gwas.tsv
+head lymph.assoc -n1 > colnames_for_gwas
+
+wget http://www.dropbox.com/s/5la7y38od95swcf/rf.rdata?dl=0
+````
+
+````R
+
+#############################################
+#               Load packages
+#############################################
+
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(tidyr)
+library(RNOmni)
+library(stringr)
+library(TwoSampleMR)
 
 #############################################
 #             MR - lymphocytes
 #############################################
+setwd("/data/Wolfson-UKBB-Dobson/MEL_PD/")
 
 # read in sumstats and change col names
-lymph = read_tsv("lymph_gwas.tsv")
-colnames(sumstats) = c("SNP","effect_allele","other_allele","beta","pval","se","eaf")
+colnames_for_gwas = read_csv("colnames_for_gwas")
+lymph = read_tsv("lymph_gwas.tsv",col_names=FALSE)
+colnames(lymph) = colnames(colnames_for_gwas)
 
+lymph = lymph %>% rename(
+  SNP = ID,
+  pval = P,
+  effect_allele = ALT,
+  other_allele = REF,
+  eaf = ALT_FREQ,
+  se = SE,
+  beta = EFFECT)
 
-# remove SNPs above p threshold
-lymph = sumstats %>% filter(pval < 5e-08)
+# basic QC
+lymph = lymph %>% filter(pval < 5e-08)
 lymph = lymph %>% filter(!nchar(other_allele)>1)
 lymph = lymph %>% filter(!nchar(effect_allele)>1)
 lymph = lymph %>% filter(!nchar(other_allele)>1)
 lymph = lymph %>% filter(INFO>0.3)
-rm(sumstats)
-#remove duplicates
 lymph = lymph %>% distinct(SNP,.keep_all = TRUE)
-# exclude mhc
 lymph = lymph %>% filter(!(CHR==6 & BP >25000000 & BP < 35000000))
 
-
 # read in and merge pd meta5 sumstats
-
 ukb_rsids = lymph %>% select(CHR,BP,SNP) %>% mutate("MarkerName"=paste0("chr",CHR,":",BP))
 
 pd = read_table2("/data/Wolfson-UKBB-Dobson/PD/ALASTAIR_SEPT2019/META_NO_UKBB1.tbl")
@@ -748,38 +803,27 @@ pd = pd %>% select(CHR,BP,SNP,Allele1,Allele2,Freq1,Effect,StdErr,`P-value`) %>%
 pd = pd %>% filter(!effect_allele=="D" | effect_allele=="I")
 pd = pd  %>% distinct(SNP,.keep_all = TRUE)
 
-###################################
-# mr
-###################################
 
 pd = pd %>% filter(SNP %in% lymph$SNP)
-
 
 # remove SNPs not in meta5
 lymph = lymph %>% filter(SNP %in% pd$SNP)
 
 #clump & format
 lymph_dat = clump_data(lymph)
-lymph_gsmr = format_data(lymph,type="exposure")
 lymph_dat = format_data(lymph_dat,type="exposure")
-
-pd_gsmr = pd %>% filter(SNP %in% lymph_gsmr$SNP)
-pd_gsmr = format_data(pd_gsmr,type="outcome")
-
 pd_dat = pd %>% filter(SNP %in% lymph_dat$SNP)
 pd_dat = format_data(pd_dat,type="outcome")
 
 #harmonise
 combo_dat = harmonise_data(lymph_dat,pd_dat)
-gsmr_combo = harmonise_data(lymph_gsmr,pd_gsmr)
 
-gsmr_combo = clump_data(gsmr_combo)
 # steiger and moe
 combo_dat$samplesize.outcome=37688+981372
 combo_dat$samplesize.exposure=408112
 
 # Load the downloaded RData object. This loads the rf object
-load("/data/home/hmy117/rf.rdata")
+load("rf.rdata?dl=0")
 
 # Obtain estimates from all methods, and generate data metrics
 combo_dat$units.outcome="log odds"
@@ -821,13 +865,13 @@ mr_heterogeneity(combo_dat)
 
 forest = mr_forest_plot(mr_singlesnp(combo_dat))
 forest = forest$`Lymphocyte count.PD`+labs(x="Log(OR) for PD per 1-SD increase in lymphocyte count")+theme_classic()+theme(legend.position="none")
-png("forest.png",res=300,width=8,height=8, units="in")
+png("forest.png",res=300,width=6,height=8, units="in")
 forest
 dev.off()
 
 scat=mr_scatter_plot(standard_res,combo_dat)
 scat = scat$`Lymphocyte count.PD`+labs(x="Per-allele effect on lymphocyte count (SD)",y="Per-allele effect on PD risk (logOR)")+theme_classic()+theme(legend.position="right")
-png("scat.png",res=300,width=8,height=8, units="in")
+png("scat.png",res=300,width=6,height=8, units="in")
 scat
 dev.off()
 combo_dat
@@ -848,23 +892,19 @@ p1=ggplot(summ,aes(b,method2,fill=MOE))+
   geom_vline(xintercept=0,alpha=0.3)+
   theme_classic()+
   labs(x="Beta (MR estimate)",y="MR method")
-png("moe.png",res=300,width=8,height=8, units="in")
+png("moe.png",res=300,width=6,height=8, units="in")
 p1
 dev.off()
 sum(combo_dat$r.exposure^2)
 
+# mr presso
+presso_res = run_mr_presso(combo_dat,NbDistribution=10000)
 
-
-
-
-# Download sum stats for WBC traits and cut a few columns to make them easier to work with
-
-````unix
-cd /data/Wolfson-UKBB-Dobson/MEL_PD
-wget ftp://ftp.sanger.ac.uk/pub/project/humgen/summary_statistics/UKBB_blood_cell_traits/lymph.assoc
-awk '{FS=",";$1=$1}1' OFS="\t" lymph.assoc | awk '{if($10<5e-8 && $18>0.3) print $0}' OFS="\t" > lymph_gwas.tsv
-wget ftp://ftp.sanger.ac.uk/pub/project/humgen/summary_statistics/UKBB_blood_cell_traits/eo.assoc
-awk '{FS=",";$1=$1}1' OFS="\t" eo.assoc | awk '{if($10<5e-8 && $18>0.3) print $0}' OFS="\t" > eo_gwas.tsv
-wget ftp://ftp.sanger.ac.uk/pub/project/humgen/summary_statistics/UKBB_blood_cell_traits/mono.assoc
-awk '{FS=",";$1=$1}1' OFS="\t" mono.assoc | awk '{if($10<5e-8 && $18>0.3) print $0}' OFS="\t" > mono_gwas.tsv
+presso_res[[1]][1]$`Main MR results` %>%
+as.tbl() %>%
+mutate(OR = exp(`Causal Estimate`),
+SE = Sd,
+lower_ci = exp(`Causal Estimate` - 1.96*SE),
+upper_ci = exp(`Causal Estimate` + 1.96*SE)) %>%
+select(-2,-3,-4,-5,-8)
 ````
