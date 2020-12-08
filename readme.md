@@ -730,8 +730,8 @@ dev.off()
 
 ## Mendelian randomisation
 
-Download sum stats for WBC traits and cut a few columns to make them easier to work with
-Filter for P<5e-8 and INFO > 0.3
+- Download sum stats for WBC traits and cut a few columns to make them easier to work with
+- Filter for P<5e-8 and INFO > 0.3
 
 ````unix
 cd /data/Wolfson-UKBB-Dobson/MEL_PD
