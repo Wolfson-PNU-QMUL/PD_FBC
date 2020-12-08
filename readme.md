@@ -1,8 +1,8 @@
 # Relationship between blood markers of inflammation and PD: an observational and MR study
-Authors: Mel Jensen, Ben Jacobs, Ruth Dobson, Sara Bandres-Ciga, Cornelis Blauwendraat, Anette Schrag, The International Parkinsons Disease Genomics Consortium, Alastair J Noyce
-Code: Ben J
-Preprint: [here](https://www.medrxiv.org/content/10.1101/2020.09.13.20189530v3)
-Updated: Ben J, 8/12/20
+- Authors: Mel Jensen, Ben Jacobs, Ruth Dobson, Sara Bandres-Ciga, Cornelis Blauwendraat, Anette Schrag, The International Parkinsons Disease Genomics Consortium, Alastair J Noyce
+- Code: Ben J
+- Preprint: [here](https://www.medrxiv.org/content/10.1101/2020.09.13.20189530v3)
+- Updated: Ben J, 8/12/20
 
 ## Overview
 - Convert and extract UKB phenotype data
