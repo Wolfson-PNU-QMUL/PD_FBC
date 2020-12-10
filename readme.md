@@ -2,7 +2,7 @@
 - Authors: Mel Jensen, Ben Jacobs, Ruth Dobson, Sara Bandres-Ciga, Cornelis Blauwendraat, Anette Schrag, The International Parkinsons Disease Genomics Consortium, Alastair J Noyce
 - Code: Ben J
 - Preprint: [here](https://www.medrxiv.org/content/10.1101/2020.09.13.20189530v3)
-- Updated: Ben J, 8/12/20
+- Updated: Ben J, 10/12/20
 
 ## Overview
 - Convert and extract UKB phenotype data
@@ -199,7 +199,9 @@ df = df %>% filter(FBC_exclusion=="Include")
 # remove people who may have pd dx from other sources (e.g death cert)
 df = df %>% filter(!(PD_status==0 & !is.na(age_at_pd_dx)))
 
-
+# remove people missing count data
+df = df %>% filter(!is.na(`Lymphocyte count.0.0`))
+table(df$PD_status)
 
 
 #############################################
@@ -304,13 +306,37 @@ demo_exclusions$trait = rownames(demo_exclusions)
 write_csv(tbl,"excluded_people_cont_demo.csv")
 write_csv(demo_exclusions,"excluded_people_cat_demo.csv")
 
+
+#############################################
+#               basic count distributions
+#############################################
+counts = df %>% select(`C-reactive protein.0.0`,
+`Albumin.0.0`,
+`Platelet count.0.0`,
+`Lymphocyte count.0.0`,
+`Monocyte count.0.0`,
+`Eosinophill count.0.0`,
+`Neutrophill count.0.0`,
+`Basophill count.0.0`,
+`White blood cell (leukocyte) count.0.0`,
+`C-reactive protein.0.0`)
+
+summary_counts = bind_rows(counts %>% summarise_all(median,na.rm=TRUE),
+counts %>% summarise_all(mean,na.rm=TRUE),
+counts %>% summarise_all(min,na.rm=TRUE),
+counts %>% summarise_all(max,na.rm=TRUE),
+counts %>% summarise_all(sd,na.rm=TRUE)) %>%
+mutate(stat = c("median","mean","min","max","sd"))
+write_csv(summary_counts,"summary_counts.csv")
+
 #############################################
 #               logit models
 #############################################
 
 coef_df = data.frame()
 make_model = function(x){
-  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+df[[x]],family=binomial(link="logit"))
+  z_score = (df[[x]]-mean(df[[x]],na.rm=TRUE))/sd(df[[x]],na.rm=TRUE)
+  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+z_score,family=binomial(link="logit"))
   coef_tbl = summary(model)$coefficients
   aov = anova(model,test="Chisq")
   coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6]))
@@ -325,123 +351,40 @@ make_model("Basophill count.0.0")
 make_model("White blood cell (leukocyte) count.0.0")
 make_model("C-reactive protein.0.0")
 make_model("Albumin.0.0")
-make_model("Lymphocyte percentage.0.0")
-make_model("Monocyte percentage.0.0")
-make_model("Eosinophill percentage.0.0")
-make_model("Neutrophill percentage.0.0")
-make_model("Basophill percentage.0.0")
 
 colnames(coef_df) = c("Beta","SE","Z","P","LR_P")
-coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin","Lymphocyte percentage","Monocyte percentage","Eosinophil percentage","Neutrophil percentage","Basophil percentage")
+coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin")
 
 coef_df = coef_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-write_csv(coef_df,"supplemental_fbc_model_coefficients.csv")
-coef_df = coef_df[-grep("percentage",coef_df$Trait),]
-coef_df$Q = p.adjust(coef_df$P,method="fdr")
+
+# flip betas so that everything is framed as the effect of a decrease in the trait
+coef_df$Beta = coef_df$Beta*(-1)
 
 coef_df$or = exp(coef_df$Beta)
 coef_df$lower_ci = exp(coef_df$Beta-1.96*coef_df$SE)
 coef_df$upper_ci = exp(coef_df$Beta+1.96*coef_df$SE)
-
-write_csv(coef_df,"fbc_model_coefficients.csv")
-
-# plot
-
-p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per unit increase in trait",y="Trait")
-png("model_coefficients_raw_fbc.png",width=3,height=8,res=300,units="in")
-p1
-dev.off()
-
-# repeat with normalised vars
-
-coef_df = data.frame()
-normalise = function(x){
-  mean = mean(x,na.rm=TRUE)
-  sd = sd(x,na.rm=TRUE)
-  y=(x - mean)/sd
-  return(y)
-}
-
-
-make_model_norm = function(x){
-  df$y = normalise(df[[x]])
-  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+y,family=binomial(link="logit"))
-  coef_tbl = summary(model)$coefficients
-  aov = anova(model,test="Chisq")
-  coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6]))
-}
-
-make_model_norm("Platelet count.0.0")
-make_model_norm("Lymphocyte count.0.0")
-make_model_norm("Monocyte count.0.0")
-make_model_norm("Eosinophill count.0.0")
-make_model_norm("Neutrophill count.0.0")
-make_model_norm("Basophill count.0.0")
-make_model_norm("White blood cell (leukocyte) count.0.0")
-make_model_norm("C-reactive protein.0.0")
-make_model_norm("Albumin.0.0")
-make_model_norm("Lymphocyte percentage.0.0")
-make_model_norm("Monocyte percentage.0.0")
-make_model_norm("Eosinophill percentage.0.0")
-make_model_norm("Neutrophill percentage.0.0")
-make_model_norm("Basophill percentage.0.0")
-
-colnames(coef_df) = c("Beta","SE","Z","P","LR_P")
-coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin","Lymphocyte percentage","Monocyte percentage","Eosinophil percentage","Neutrophil percentage","Basophil percentage")
-
-coef_df = coef_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-write_csv(coef_df,"normalised_supplemental_fbc_model_coefficients.csv")
-coef_df = coef_df[-grep("percentage",coef_df$Trait),]
 coef_df$Q = p.adjust(coef_df$P,method="fdr")
+coef_df = coef_df %>% mutate("OR (95% CI)" = paste0(round(or,2)," (95% CI ",round(lower_ci,2)," - ",round(upper_ci,2),")"))
 
-coef_df$or = exp(coef_df$Beta)
-coef_df$lower_ci = exp(coef_df$Beta-1.96*coef_df$SE)
-coef_df$upper_ci = exp(coef_df$Beta+1.96*coef_df$SE)
-
-write_csv(coef_df,"normlised_fbc_model_coefficients.csv")
+write_csv(coef_df %>% select(1,9,4,8),"fbc_model_coefficients.csv")
 
 # plot
 
-p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per 1-SD increase in trait",y="Trait")
-png("normalised_model_coefficients_raw_fbc.png",width=6,height=8,res=300,units="in")
+p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds ratio for incident PD per 1-SD decrease in trait",y="Trait")
+png("model_coefficients_fbc.png",width=6,height=8,res=300,units="in")
 p1
 dev.off()
 
-
-#############################################
-#             survival analysis
-#############################################
-
-library(survival)
-library(survminer)
-df = df %>% mutate("lymphopaenia"=ifelse(`Lymphocyte count.0.0`>=1,0,1))
-model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+lymphopaenia,family=binomial(link="logit"))
-coef_tbl = summary(model)$coefficients
-aov = anova(model,test="Chisq")
-
-
-df = df %>% mutate("time_to_dx" = ifelse(PD_Dx_after_rec==1,age_at_pd_dx - `Age at recruitment.0.0`,12.2))
-surv = Surv(time=df$time_to_dx, event=df$PD_Dx_after_rec)
-surv_model = survfit(data=df,surv ~ lymphopaenia)
-ggsurvplot(surv_model,pval=TRUE)
-
-df = df %>% mutate(lymph_bin = cut2(`Lymphocyte count.0.0`,g=10))
-coxph = coxph(surv~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+`Lymphocyte count.0.0`,data=df)
-ggforest(coxph)
-
-coxph = coxph(surv~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+lymphopaenia,data=df)
-ggforest(coxph)
-
-coxph = coxph(surv~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+lymph_bin,data=df)
-ggforest(coxph)
 
 #############################################
 #             logit models matched
 #############################################
 
+
 coef_matched_df = data.frame()
 make_model = function(x){
-  model = glm(data=matched_df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+matched_df[[x]],family=binomial(link="logit"))
+  z_score = (matched_df[[x]]-mean(matched_df[[x]],na.rm=TRUE))/sd(matched_df[[x]],na.rm=TRUE)
+  model = glm(data=matched_df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+z_score,family=binomial(link="logit"))
   coef_tbl = summary(model)$coefficients
   aov = anova(model,test="Chisq")
   coef_matched_df <<- rbind(coef_matched_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6]))
@@ -456,153 +399,29 @@ make_model("Basophill count.0.0")
 make_model("White blood cell (leukocyte) count.0.0")
 make_model("C-reactive protein.0.0")
 make_model("Albumin.0.0")
-make_model("Lymphocyte percentage.0.0")
-make_model("Monocyte percentage.0.0")
-make_model("Eosinophill percentage.0.0")
-make_model("Neutrophill percentage.0.0")
-make_model("Basophill percentage.0.0")
 
 colnames(coef_matched_df) = c("Beta","SE","Z","P","LR_P")
-coef_matched_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin","Lymphocyte percentage","Monocyte percentage","Eosinophil percentage","Neutrophil percentage","Basophil percentage")
+coef_matched_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin")
 
 coef_matched_df = coef_matched_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-write_csv(coef_matched_df,"matched_supplemental_fbc_model_coefficients.csv")
-coef_matched_df = coef_matched_df[-grep("percentage",coef_matched_df$Trait),]
-coef_matched_df$Q = p.adjust(coef_matched_df$P,method="fdr")
+
+# flip betas so that everything is framed as the effect of a decrease in the trait
+coef_matched_df$Beta = coef_matched_df$Beta*(-1)
 
 coef_matched_df$or = exp(coef_matched_df$Beta)
 coef_matched_df$lower_ci = exp(coef_matched_df$Beta-1.96*coef_matched_df$SE)
 coef_matched_df$upper_ci = exp(coef_matched_df$Beta+1.96*coef_matched_df$SE)
-
-write_csv(coef_matched_df,"matched_fbc_model_coefficients.csv")
-
-# plot
-
-p1 = ggplot(coef_matched_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per unit increase in trait",y="Trait")
-png("matched_model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
-p1
-dev.off()
-
-# repeat with normalised vars
-
-coef_matched_df = data.frame()
-normalise = function(x){
-  mean = mean(x,na.rm=TRUE)
-  sd = sd(x,na.rm=TRUE)
-  y=(x - mean)/sd
-  return(y)
-}
-
-
-make_model_norm = function(x){
-  matched_df$y = normalise(matched_df[[x]])
-  model = glm(data=matched_df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+y,family=binomial(link="logit"))
-  coef_tbl = summary(model)$coefficients
-  aov = anova(model,test="Chisq")
-  coef_matched_df <<- rbind(coef_matched_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6]))
-}
-
-make_model_norm("Platelet count.0.0")
-make_model_norm("Lymphocyte count.0.0")
-make_model_norm("Monocyte count.0.0")
-make_model_norm("Eosinophill count.0.0")
-make_model_norm("Neutrophill count.0.0")
-make_model_norm("Basophill count.0.0")
-make_model_norm("White blood cell (leukocyte) count.0.0")
-make_model_norm("C-reactive protein.0.0")
-make_model_norm("Albumin.0.0")
-make_model_norm("Lymphocyte percentage.0.0")
-make_model_norm("Monocyte percentage.0.0")
-make_model_norm("Eosinophill percentage.0.0")
-make_model_norm("Neutrophill percentage.0.0")
-make_model_norm("Basophill percentage.0.0")
-
-colnames(coef_matched_df) = c("Beta","SE","Z","P","LR_P")
-coef_matched_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin","Lymphocyte percentage","Monocyte percentage","Eosinophil percentage","Neutrophil percentage","Basophil percentage")
-
-coef_matched_df = coef_matched_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-write_csv(coef_matched_df,"matched_normalised_supplemental_fbc_model_coefficients.csv")
-coef_matched_df = coef_matched_df[-grep("percentage",coef_matched_df$Trait),]
 coef_matched_df$Q = p.adjust(coef_matched_df$P,method="fdr")
+coef_matched_df = coef_matched_df %>% mutate("OR (95% CI)" = paste0(round(or,2)," (95% CI ",round(lower_ci,2)," - ",round(upper_ci,2),")"))
 
-coef_matched_df$or = exp(coef_matched_df$Beta)
-coef_matched_df$lower_ci = exp(coef_matched_df$Beta-1.96*coef_matched_df$SE)
-coef_matched_df$upper_ci = exp(coef_matched_df$Beta+1.96*coef_matched_df$SE)
-
-write_csv(coef_matched_df,"normlised_fbc_model_coefficients.csv")
+write_csv(coef_matched_df %>% select(1,9,4,8),"matched_fbc_model_coefficients.csv")
 
 # plot
 
-p1 = ggplot(coef_matched_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per 1-SD increase in trait",y="Trait")
-png("normalised_model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
+p1 = ggplot(coef_matched_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds ratio for incident PD per 1-SD decrease in trait",y="Trait")
+png("matched_model_coefficients_fbc.png",width=6,height=8,res=300,units="in")
 p1
 dev.off()
-
-
-
-
-#############################################
-#             raw count plots
-#############################################
-
-make_plot = function(x){
-  p<<-ggplot(df,aes(factor(PD_Dx_after_rec),df[[x]]))+geom_violin(fill="blue",alpha=0.3)+geom_boxplot(fill="red",alpha=0.2,width=0.2)+scale_y_log10()+labs(x="Incident PD (0=control, 1=case)",y="Cell count")
-}
-
-make_plot("Eosinophill count.0.0")
-png("eos.png",height=8,width=8,res=300,units="in")
-p
-dev.off()
-make_plot("Lymphocyte count.0.0")
-png("lymphs.png",height=8,width=8,res=300,units="in")
-p
-dev.off()
-
-#############################################
-#             relation to age at dx
-#############################################
-
-df = df %>% mutate(time_to_dx = age_at_pd_dx - `Age at recruitment.0.0`)
-pd = df %>% filter(PD_Dx_after_rec==1)
-pd$time_to_dx_z = rankNorm(pd$time_to_dx)
-
-ggplot(pd,aes(`Lymphocyte count.0.0`,time_to_dx_z))+geom_point()
-
-coef_df = data.frame()
-make_model = function(x){
-  model = lm(data=pd,time_to_dx_z~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+pd[[x]])
-  null_model = lm(data=pd %>% filter(!is.na(pd[[x]])),time_to_dx_z ~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`)
-  coef_tbl = summary(model)$coefficients
-  aov = anova(model,null_model)
-  coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>F)`[2]))
-}
-
-make_model("Platelet count.0.0")
-make_model("Lymphocyte count.0.0")
-make_model("Monocyte count.0.0")
-make_model("Eosinophill count.0.0")
-make_model("Neutrophill count.0.0")
-make_model("Basophill count.0.0")
-make_model("White blood cell (leukocyte) count.0.0")
-make_model("C-reactive protein.0.0")
-make_model("Albumin.0.0")
-make_model("Lymphocyte percentage.0.0")
-make_model("Monocyte percentage.0.0")
-make_model("Eosinophill percentage.0.0")
-make_model("Neutrophill percentage.0.0")
-make_model("Basophill percentage.0.0")
-
-colnames(coef_df) = c("Beta","SE","Z","P","LR_P")
-coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin","Lymphocyte percentage","Monocyte percentage","Eosinophil percentage","Neutrophil percentage","Basophil percentage")
-
-coef_df = coef_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-write_csv(coef_df,"relation_to_ageatdx_supplemental_fbc_model_coefficients.csv")
-coef_df = coef_df[-grep("percentage",coef_df$Trait),]
-coef_df$Q = p.adjust(coef_df$P,method="fdr")
-
-coef_df$lower_ci = coef_df$Beta-1.96*coef_df$SE
-coef_df$upper_ci = coef_df$Beta+1.96*coef_df$SE
-write_csv(coef_df,"relation_to_ageatdx_fbc_model_coefficients.csv")
 
 #############################################
 #             sensitivity analyses
@@ -620,40 +439,34 @@ df = df %>% filter(!is.na(alcohol))
 # 1. control for BMI, smoking, alcohol
 coef_df = data.frame()
 make_model = function(x){
-  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ `Body mass index (BMI).0.0`+ alcohol + smoking + df[[x]],family=binomial(link="logit"))
+  z_score = (df[[x]]-mean(df[[x]],na.rm=TRUE))/sd(df[[x]],na.rm=TRUE)
+  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ `Body mass index (BMI).0.0`+ alcohol + smoking + z_score,family=binomial(link="logit"))
   coef_tbl = summary(model)$coefficients
   aov = anova(model,test="Chisq")
   coef_df <<- rbind(coef_df,c(coef_tbl[9,],aov$`Pr(>Chi)`[9]))
 }
 
 
-make_model("Platelet count.0.0")
-make_model("Lymphocyte count.0.0")
-make_model("Monocyte count.0.0")
-make_model("Eosinophill count.0.0")
-make_model("Neutrophill count.0.0")
-make_model("Basophill count.0.0")
-make_model("White blood cell (leukocyte) count.0.0")
-make_model("C-reactive protein.0.0")
-make_model("Albumin.0.0")
-
-
 colnames(coef_df) = c("Beta","SE","Z","P","LR_P")
 coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin")
 
 coef_df = coef_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-coef_df$Q = p.adjust(coef_df$P,method="fdr")
+
+# flip betas so that everything is framed as the effect of a decrease in the trait
+coef_df$Beta = coef_df$Beta*(-1)
 
 coef_df$or = exp(coef_df$Beta)
 coef_df$lower_ci = exp(coef_df$Beta-1.96*coef_df$SE)
 coef_df$upper_ci = exp(coef_df$Beta+1.96*coef_df$SE)
+coef_df$Q = p.adjust(coef_df$P,method="fdr")
+coef_df = coef_df %>% mutate("OR (95% CI)" = paste0(round(or,2)," (95% CI ",round(lower_ci,2)," - ",round(upper_ci,2),")"))
 
-write_csv(coef_df,"supplemental_with_extra_covariates_fbc_model_coefficients.csv")
+write_csv(coef_df %>% select(1,9,4,8),"extra_covars_fbc_model_coefficients.csv")
 
 # plot
 
-p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per unit increase in trait",y="Trait")
-png("extra_covariates_model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
+p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds ratio for incident PD per 1-SD decrease in trait",y="Trait")
+png("extracovars_model_coefficients_fbc.png",width=6,height=8,res=300,units="in")
 p1
 dev.off()
 
@@ -663,10 +476,27 @@ extreme_counts = df %>% filter(!is.na(`Lymphocyte count.0.0`)) %>%
 mutate(lymph_z = (`Lymphocyte count.0.0`-mean(`Lymphocyte count.0.0`))/sd(`Lymphocyte count.0.0`)) %>% filter(abs(lymph_z)<3)
 hist(extreme_count$lymph_z)
 
-model = glm(data=extreme_counts,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ `Lymphocyte count.0.0`,family=binomial(link="logit"))
-summary(model)
+# recalculate z score with extre values cut out
+extreme_counts = extreme_counts %>% filter(!is.na(`Lymphocyte count.0.0`)) %>%
+mutate(lymph_z = (`Lymphocyte count.0.0`-mean(`Lymphocyte count.0.0`))/sd(`Lymphocyte count.0.0`))
+
+model = glm(data=extreme_counts,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+lymph_z,family=binomial(link="logit"))
+coef_tbl = summary(model)$coefficients
+aov = anova(model,test="Chisq")
+stats = c(coef_tbl[6,],aov$`Pr(>Chi)`[6])
+or = exp(-stats[1])
+upper_ci = exp(-stats[1]+1.96*stats[2])
+lower_ci = exp(-stats[1]-1.96*stats[2])
+paste0(round(or,2)," (95% CI ",round(lower_ci,2)," - ",round(upper_ci,2),")",", p=",round(stats[5],3))
+
+
 
 # 3. Exclude people close to diagnosis
+
+df = df %>% mutate(time_to_dx = age_at_pd_dx - `Age at recruitment.0.0`)
+pd = df %>% filter(PD_Dx_after_rec==1)
+pd$time_to_dx_z = rankNorm(pd$time_to_dx)
+
 
 # repeat lympho models, excluding people within x years of diagnosis (up to 8)
 
@@ -674,7 +504,8 @@ coef_df = data.frame()
 make_model = function(x){
   print(paste0("making models excluding people ",x," years from dx"))
   test_df = df %>% filter(!(PD_Dx_after_rec==1 & time_to_dx <= x))
-  model = glm(data=test_df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ `Lymphocyte count.0.0`,family=binomial(link="logit"))
+  z_score = (test_df$`Lymphocyte count.0.0`-mean(test_df$`Lymphocyte count.0.0`,na.rm=TRUE))/sd(test_df$`Lymphocyte count.0.0`,na.rm=TRUE)
+    model = glm(data=test_df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ z_score,family=binomial(link="logit"))
   coef_tbl = summary(model)$coefficients
   aov = anova(model,test="Chisq")
   coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6], table(test_df$PD_status)[1],table(test_df$PD_status)[2]))
@@ -683,18 +514,44 @@ sapply(c(1:8),make_model)
 
 coef_df = cbind(c(1:8),coef_df)
 colnames(coef_df) = c("Years before diagnosis filter","beta","se","z","p","lr_p","n_control","n_case")
-coef_df = coef_df %>% select(1,2,3,6,7,8) %>% mutate(OR = exp(beta)) %>% mutate(Lower_CI = exp(beta-1.96*se)) %>% mutate(Upper_CI = exp(beta+1.96*se)) %>% select(1,OR,Lower_CI,Upper_CI,n_case,n_control,lr_p)
+coef_df = coef_df %>% select(1,2,3,6,7,8) %>% mutate(OR = exp(-beta)) %>% mutate(Lower_CI = exp(-beta-1.96*se)) %>% mutate(Upper_CI = exp(-beta+1.96*se)) %>% select(1,OR,Lower_CI,Upper_CI,n_case,n_control,lr_p)
 write_csv(coef_df,"years_before_dx_filter.csv")
 
 
+# 4 . Lymphopaenia as binary
+df = df %>% mutate("lymphopaenia"=ifelse(`Lymphocyte count.0.0`>=1,0,1))
+model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+lymphopaenia,family=binomial(link="logit"))
+coef_tbl = summary(model)$coefficients
+aov = anova(model,test="Chisq")
+
+stats = c(coef_tbl[6,],aov$`Pr(>Chi)`[6])
+or = exp(stats[1])
+upper_ci = exp(stats[1]+1.96*stats[2])
+lower_ci = exp(stats[1]-1.96*stats[2])
+paste0(round(or,2)," (95% CI ",round(lower_ci,2)," - ",round(upper_ci,2),")",", p=",round(stats[5],3))
+
+
+# 5. whole cohort
+
+df = read_tsv("mel_fbc.tsv")
+new_df = read_tsv("../ukb_pheno_2410/ukb_coded_pheno_final.tsv",col_types=cols_only(
+  `EID` = col_double(),
+  `Vitamin D.0.0`=col_double(),
+  `Glycated haemoglobin (HbA1c).0.0`=col_double(),
+  `C-reactive protein.0.0`=col_double(),
+  `Albumin.0.0`=col_double(),
+  `Creatinine.0.0`=col_double()))
+
+df = df %>% left_join(new_df,by="EID")
+
 coef_df = data.frame()
 make_model = function(x){
-  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+ df[[x]],family=binomial(link="logit"))
+  z_score = (df[[x]]-mean(df[[x]],na.rm=TRUE))/sd(df[[x]],na.rm=TRUE)
+  model = glm(data=df,PD_Dx_after_rec~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+z_score,family=binomial(link="logit"))
   coef_tbl = summary(model)$coefficients
   aov = anova(model,test="Chisq")
   coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>Chi)`[6]))
 }
-
 
 make_model("Platelet count.0.0")
 make_model("Lymphocyte count.0.0")
@@ -706,25 +563,72 @@ make_model("White blood cell (leukocyte) count.0.0")
 make_model("C-reactive protein.0.0")
 make_model("Albumin.0.0")
 
+colnames(coef_df) = c("Beta","SE","Z","P","LR_P")
+coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin")
+
+coef_df = coef_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
+
+# flip betas so that everything is framed as the effect of a decrease in the trait
+coef_df$Beta = coef_df$Beta*(-1)
+
+coef_df$or = exp(coef_df$Beta)
+coef_df$lower_ci = exp(coef_df$Beta-1.96*coef_df$SE)
+coef_df$upper_ci = exp(coef_df$Beta+1.96*coef_df$SE)
+coef_df$Q = p.adjust(coef_df$P,method="fdr")
+coef_df = coef_df %>% mutate("OR (95% CI)" = paste0(round(or,2)," (95% CI ",round(lower_ci,2)," - ",round(upper_ci,2),")"))
+
+write_csv(coef_df %>% select(1,9,4,8),"wholecohort_fbc_model_coefficients.csv")
+
+# plot
+
+p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds ratio for incident PD per 1-SD decrease in trait",y="Trait")
+png("whle_cohort_model_coefficients_fbc.png",width=6,height=8,res=300,units="in")
+p1
+dev.off()
+
+
+
+
+#############################################
+#             relation to age at dx
+#############################################
+
+ggplot(pd,aes(`Lymphocyte count.0.0`,time_to_dx_z))+geom_point()
+
+coef_df = data.frame()
+make_model = function(x){
+  z_score = (pd[[x]]-mean(pd[[x]],na.rm=TRUE)) /sd(pd[[x]],na.rm=TRUE)
+  model = lm(data=pd,time_to_dx_z~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`+z_score)
+  null_model = lm(data=pd %>% filter(!is.na(pd[[x]])),time_to_dx_z ~`Age at recruitment.0.0`+Sex.0.0+`Townsend deprivation index at recruitment.0.0`+`Ethnic background.0.0`)
+  coef_tbl = summary(model)$coefficients
+  aov = anova(model,null_model)
+  coef_df <<- rbind(coef_df,c(coef_tbl[6,],aov$`Pr(>F)`[2]))
+}
+
+make_model("Platelet count.0.0")
+make_model("Lymphocyte count.0.0")
+make_model("Monocyte count.0.0")
+make_model("Eosinophill count.0.0")
+make_model("Neutrophill count.0.0")
+make_model("Basophill count.0.0")
+make_model("White blood cell (leukocyte) count.0.0")
+make_model("C-reactive protein.0.0")
+make_model("Albumin.0.0")
 
 colnames(coef_df) = c("Beta","SE","Z","P","LR_P")
 coef_df$Trait = c("Platelet count","Lymphocyte count","Monocyte count","Eosinophil count","Neutrophil count","Basophil count","Total White Cell Count","CRP","Albumin")
 
 coef_df = coef_df %>% arrange(LR_P) %>% select(Trait,Beta,SE,LR_P) %>% rename("P"="LR_P")
-coef_df$Q = p.adjust(coef_df$P,method="fdr")
+
+# flip betas so that everything is framed as the effect of a decrease in the trait
+coef_df$Beta = coef_df$Beta*(-1)
 
 coef_df$or = exp(coef_df$Beta)
 coef_df$lower_ci = exp(coef_df$Beta-1.96*coef_df$SE)
 coef_df$upper_ci = exp(coef_df$Beta+1.96*coef_df$SE)
+coef_df$Q = p.adjust(coef_df$P,method="fdr")
 
-write_csv(coef_df,"supplemental_with_time_to_dx_filter_fbc_model_coefficients.csv")
-
-# plot
-
-p1 = ggplot(coef_df,aes(Beta,Trait))+geom_vline(xintercept=0,alpha=0.2)+geom_point()+geom_errorbarh(mapping=aes(xmin=Beta-1.96*SE,xmax=Beta+1.96*SE,y=Trait),height=0.1)+theme_classic()+labs(x="Beta: log odds of incident PD per unit increase in trait",y="Trait")
-png("time_to_dx_filter_model_coefficients_raw_fbc.png",width=8,height=8,res=300,units="in")
-p1
-dev.off()
+write_csv(coef_df %>% select(1,2,3,4,8),"time_to_dx_t_fbc_model_coefficients.csv")
 ````
 
 ## Mendelian randomisation
@@ -808,6 +712,9 @@ pd = pd %>% filter(SNP %in% lymph$SNP)
 # remove SNPs not in meta5
 lymph = lymph %>% filter(SNP %in% pd$SNP)
 
+# flip betas so effects are in direction of reducing lympho count
+lymph = lymph %>% mutate(beta = beta * (-1) )
+
 #clump & format
 lymph_dat = clump_data(lymph)
 lymph_dat = format_data(lymph_dat,type="exposure")
@@ -869,7 +776,7 @@ forest
 dev.off()
 
 scat=mr_scatter_plot(standard_res,combo_dat)
-scat = scat$`Lymphocyte count.PD`+labs(x="Per-allele effect on lymphocyte count (SD)",y="Per-allele effect on PD risk (logOR)")+theme_classic()+theme(legend.position="right")
+scat = scat$`Lymphocyte count.PD`+labs(x="Per-allele reduction in lymphocyte count (SD)",y="Per-allele effect on PD risk (logOR)")+theme_classic()+theme(legend.position="right")
 png("scat.png",res=300,width=6,height=8, units="in")
 scat
 dev.off()
@@ -897,7 +804,9 @@ dev.off()
 sum(combo_dat$r.exposure^2)
 
 # mr presso
-presso_res = run_mr_presso(combo_dat,NbDistribution=10000)
+
+set.seed(1)
+presso_res = run_mr_presso(combo_dat,NbDistribution=1000)
 
 presso_res[[1]][1]$`Main MR results` %>%
 as.tbl() %>%
